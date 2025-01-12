@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Loading...</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        overflow: hidden;
+        width: 100vw;
+        height: 100vh;
+        background-color: black;
+      }
+    </style>
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const seed = params.get("seed") || "default-seed";
+      document.title = seed;
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.js"></script>
+    <script defer>
+      let particles = [];
+      const numParticles = 4000;
+      let flowField = [];
+      let cols, rows;
+      const resolution = 40;
+      const renderWidth = 3000;
+      const renderHeight = 3000;
+      let zOffset = 0;
+      let frameLimit = 400;
+      let colors = [];
+
+      
+      function setup() {
+        let canvas = createCanvas(windowWidth, windowHeight, P2D);
+        pixelDensity(1);
+        background(0);
+
+        cols = floor(renderWidth / resolution);
+        rows = floor(renderHeight / resolution);
+
+        let numericSeed = hashSeed(seed);
+
+        randomSeed(numericSeed);
+        noiseSeed(numericSeed);
+
+        let primaryHue = numericSeed % 255;
+        colors.push(primaryHue);
+        colors.push((primaryHue + 120) % 255);
+        colors.push((primaryHue + 240) % 255);
+
+        flowField = new Array(cols * rows);
+
+        for (let i = 0; i < numParticles; i++) {
+          particles.push(new Particle(numericSeed + i));
+        }
+
+        colorMode(HSB, 255);
+        blendMode(ADD);
+      }
+
+      function draw() {
+        frameRate(120)
+        if (frameCount > frameLimit) {
+          noLoop();
+          return;
+        }
+
+        let scaleX = width / renderWidth;
+        let scaleY = height / renderHeight;
+        let scaleFactor = max(scaleX, scaleY);
+
+        let offsetX = (width - renderWidth * scaleFactor) / 2;
+        let offsetY = (height - renderHeight * scaleFactor) / 2;
+
+        push();
+        translate(offsetX, offsetY);
+        scale(scaleFactor);
+
+        background(0, 10);
+
+        let xOffset = 0;
+        for (let x = 0; x < cols; x++) {
+          let yOffset = 0;
+          for (let y = 0; y < rows; y++) {
+            let index = x + y * cols;
+            let angle = noise(xOffset, yOffset, zOffset) * TWO_PI * 4;
+            let v = p5.Vector.fromAngle(angle);
+            v.setMag(0.5);
+            flowField[index] = v;
+            yOffset += 0.1;
+          }
+          xOffset += 0.1;
+        }
+        zOffset += 0.01;
+
+        for (let p of particles) {
+          p.follow(flowField);
+          p.update();
+          p.edges();
+          p.show();
+        }
+
+        pop();
+      }
+
+      class Particle {
+        constructor(seed) {
+          this.pos = createVector(random(renderWidth), random(renderHeight));
+          this.vel = createVector(0, 0);
+          this.acc = createVector(0, 0);
+          this.maxSpeed = 4;
+
+          this.h = colors[floor(seededRandom(seed, 0, 3))];
+        }
+
+        follow(flowField) {
+          let x = floor(this.pos.x / resolution);
+          let y = floor(this.pos.y / resolution);
+          let index = x + y * cols;
+          let force = flowField[index];
+          if (force) {
+            this.applyForce(force);
+          }
+        }
+
+        applyForce(force) {
+          this.acc.add(force);
+        }
+
+        update() {
+          this.vel.add(this.acc);
+          this.vel.limit(this.maxSpeed);
+          this.pos.add(this.vel);
+          this.acc.mult(0);
+
+          if (this.vel.mag() < 0.1) {
+            this.reinitialize();
+          }
+        }
+
+        edges() {
+          if (this.pos.x > renderWidth) this.pos.x = random(-10, 10);
+          if (this.pos.x < 0) this.pos.x = renderWidth - random(-10, 10);
+          if (this.pos.y > renderHeight) this.pos.y = random(-10, 10);
+          if (this.pos.y < 0) this.pos.y = renderHeight - random(-10, 10);
+        }
+
+        reinitialize() {
+          this.pos = createVector(random(renderWidth), random(renderHeight));
+          this.vel = createVector(0, 0);
+        }
+
+        show() {
+          noStroke();
+          fill(this.h, 255, 255, 10);
+          ellipse(this.pos.x, this.pos.y, 4);
+        }
+      }
+
+      function hashSeed(str) {
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) {
+          let char = str.charCodeAt(i);
+          hash = (hash << 5) - hash + char;
+          hash = hash & hash;
+        }
+        return abs(hash);
+      }
+
+      function seededRandom(seed, min = 0, max = 1) {
+        let x = Math.sin(seed) * 10000;
+        let randomVal = x - Math.floor(x);
+        return min + randomVal * (max - min);
+      }
+
+      function windowResized() {
+        frameCount = 0;
+        resizeCanvas(windowWidth, windowHeight);
+      }
+    </script>
+  </head>
+  <body>
+    <div id="sketch-container" style="background-color: black"></div>
+  </body>
+</html>
