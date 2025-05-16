@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <title>Mouse-Follow Sketch</title>
+    <title>Noise + Mouse-Follow Sketch (fluid tails via history)</title>
     <style>
       body {
         margin: 0;
@@ -12,49 +12,69 @@
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.js"></script>
     <script>
-      let particles = [];
-      let colors = [];
-      const numParticles = 2000;
-      const resolution = 80;
+      const maxParticles = 1000;
+      const tailLength = 120; // ← number of segments per tail
+      const resolution = 60;
       const renderWidth = 3000;
       const renderHeight = 3000;
-      let cols, rows;
-      let flowField;
-
-      const MAX_BRIGHTNESS = 100;
+      const MAX_SATURATION = 255;
+      const MAX_BRIGHTNESS = 255;
       const MAX_ALPHA = 5;
+      const NOISE_INFLUENCE = 2;
+      const MOUSE_INFLUENCE = 1;
+      const FADE_ALPHA = 20;
+
+      let particles = [];
+      let colors = [];
+      let cols, rows, flowField;
+      let zoom, offsetX, offsetY;
+
+      let remoteMouseX = 0;
+      let remoteMouseY = 0;
+
+      window.addEventListener("message", (ev) => {
+        if (ev.data?.type === "mouse") {
+          remoteMouseX = ev.data.x;
+          remoteMouseY = ev.data.y;
+        }
+      });
 
       function setup() {
         createCanvas(windowWidth, windowHeight, P2D);
         pixelDensity(1);
-
+        // seed
         const params = new URLSearchParams(window.location.search);
         const seed = params.get("seed") || "default-seed";
-        const numericSeed = hashSeed(seed);
-        randomSeed(numericSeed);
-        noiseSeed(numericSeed);
-
-        const primaryHue = numericSeed % 255;
+        const num = hashSeed(seed);
+        randomSeed(num);
+        noiseSeed(num);
+        // palette
+        const primaryHue = num % 255;
         colors = [
           primaryHue,
           (primaryHue + 120) % 255,
           (primaryHue + 240) % 255,
         ];
-
         colorMode(HSB, 255);
-        blendMode(ADD);
+        blendMode(BLEND);
+        background(0);
 
         cols = floor(renderWidth / resolution);
         rows = floor(renderHeight / resolution);
         flowField = new Float32Array(cols * rows * 2);
 
-        for (let i = 0; i < numParticles; i++) {
+        for (let i = 0; i < maxParticles; i++) {
           particles.push(new Particle());
         }
+
+        zoom = max(width / renderWidth, height / renderHeight);
+        offsetX = (width - renderWidth * zoom) / 2;
+        offsetY = (height - renderHeight * zoom) / 2;
       }
 
       function draw() {
-        let z = frameCount * 0.01;
+        // rebuild flow field
+        const z = frameCount * 0.01;
         let idx = 0;
         for (let x = 0; x < cols; x++) {
           for (let y = 0; y < rows; y++) {
@@ -65,30 +85,43 @@
           }
         }
 
-        background(0, 10);
+        // fade old trails
+        background(0, FADE_ALPHA);
 
-        // compute transforms
-        const scaleFactor = max(width / renderWidth, height / renderHeight);
-        const offsetX = (width - renderWidth * scaleFactor) / 2;
-        const offsetY = (height - renderHeight * scaleFactor) / 2;
-        const followMode = frameCount > 500;
-        let mxRender = 0,
-          myRender = 0;
+        // mouse follow
+        const followMode = true;
+        let mxR = 0,
+          myR = 0;
         if (followMode) {
-          mxRender = (mouseX - offsetX) / scaleFactor;
-          myRender = (mouseY - offsetY) / scaleFactor;
+          mxR = (remoteMouseX - offsetX) / zoom;
+          myR = (remoteMouseY - offsetY) / zoom;
         }
 
         push();
         translate(offsetX, offsetY);
-        scale(scaleFactor);
+        scale(zoom);
+
         for (let p of particles) {
-          p.follow(flowField, followMode, mxRender, myRender);
+          p.follow(flowField, followMode, mxR, myR);
           p.update();
           p.edges();
           p.show();
         }
+
         pop();
+
+        // recycle
+        particles.push(new Particle());
+        if (particles.length > maxParticles) {
+          particles.shift();
+        }
+      }
+
+      function windowResized() {
+        resizeCanvas(windowWidth, windowHeight);
+        zoom = max(width / renderWidth, height / renderHeight);
+        offsetX = (width - renderWidth * zoom) / 2;
+        offsetY = (height - renderHeight * zoom) / 2;
       }
 
       class Particle {
@@ -98,51 +131,69 @@
           this.acc = createVector();
           this.maxSpeed = 4;
           this.h = colors[floor(random(colors.length))];
+          this.history = [];
         }
+
         follow(field, followMode, mx, my) {
+          const x = floor(this.pos.x / resolution);
+          const y = floor(this.pos.y / resolution);
+          const i = 2 * (x + y * cols);
+          this.acc.x += field[i] * NOISE_INFLUENCE;
+          this.acc.y += field[i + 1] * NOISE_INFLUENCE;
+
           if (followMode) {
-            // vector toward mouse
-            const target = createVector(mx, my);
-            const desired = p5.Vector.sub(target, this.pos).setMag(0.5);
-            this.acc.add(desired);
-          } else {
-            // normal flowField
-            const x = floor(this.pos.x / resolution);
-            const y = floor(this.pos.y / resolution);
-            const i = 2 * (x + y * cols);
-            this.acc.x += field[i];
-            this.acc.y += field[i + 1];
+            const toM = createVector(mx, my).sub(this.pos);
+            if (toM.magSq() > 1) toM.setMag(1);
+            this.acc.add(toM.mult(MOUSE_INFLUENCE));
           }
         }
+
         update() {
+          // push current pos to history
+          this.history.push(this.pos.copy());
+          if (this.history.length > tailLength) {
+            this.history.shift();
+          }
+
           this.vel.add(this.acc).limit(this.maxSpeed);
           this.pos.add(this.vel);
           this.acc.mult(0);
         }
+
         edges() {
-          if (this.pos.x > renderWidth) this.pos.x = 0;
-          if (this.pos.x < 0) this.pos.x = renderWidth;
-          if (this.pos.y > renderHeight) this.pos.y = 0;
-          if (this.pos.y < 0) this.pos.y = renderHeight;
+          // wrap and clear history so no long cross-canvas lines
+          if (
+            this.pos.x > renderWidth ||
+            this.pos.x < 0 ||
+            this.pos.y > renderHeight ||
+            this.pos.y < 0
+          ) {
+            this.pos.x = (this.pos.x + renderWidth) % renderWidth;
+            this.pos.y = (this.pos.y + renderHeight) % renderHeight;
+            this.history = [];
+          }
         }
+
         show() {
-          noStroke();
-          fill(this.h, MAX_BRIGHTNESS, MAX_BRIGHTNESS, MAX_ALPHA);
-          ellipse(this.pos.x, this.pos.y, 4);
+          noFill();
+          stroke(this.h, MAX_SATURATION, MAX_BRIGHTNESS, MAX_ALPHA);
+          strokeWeight(2);
+          beginShape();
+          for (let v of this.history) {
+            vertex(v.x, v.y);
+          }
+          vertex(this.pos.x, this.pos.y);
+          endShape();
         }
       }
 
       function hashSeed(str) {
-        let hash = 0;
-        for (let i = 0; i < str.length; i++) {
-          hash = (hash << 5) - hash + str.charCodeAt(i);
-          hash = hash & hash;
+        let h = 0;
+        for (let c of str) {
+          h = (h << 5) - h + c.charCodeAt(0);
+          h &= h;
         }
-        return abs(hash);
-      }
-
-      function windowResized() {
-        resizeCanvas(windowWidth, windowHeight);
+        return abs(h);
       }
     </script>
   </head>
