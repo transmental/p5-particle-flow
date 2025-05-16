@@ -2,163 +2,132 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Loading...</title>
+    <title>Mouse-Follow Sketch</title>
     <style>
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
       body {
+        margin: 0;
         overflow: hidden;
-        width: 100vw;
-        height: 100vh;
-        background-color: black;
+        background: black;
       }
     </style>
-    <script>
-      const params = new URLSearchParams(window.location.search);
-      const seed = params.get("seed") || "default-seed";
-      document.title = seed;
-    </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.js"></script>
-    <script defer>
+    <script>
       let particles = [];
-      const numParticles = 4000;
-      let flowField = [];
-      let cols, rows;
-      const resolution = 40;
+      let colors = [];
+      const numParticles = 2000;
+      const resolution = 80;
       const renderWidth = 3000;
       const renderHeight = 3000;
-      let zOffset = 0;
-      let frameLimit = 400;
-      let colors = [];
+      let cols, rows;
+      let flowField;
 
-      
+      const MAX_BRIGHTNESS = 100;
+      const MAX_ALPHA = 5;
+
       function setup() {
-        let canvas = createCanvas(windowWidth, windowHeight, P2D);
+        createCanvas(windowWidth, windowHeight, P2D);
         pixelDensity(1);
-        background(0);
 
-        cols = floor(renderWidth / resolution);
-        rows = floor(renderHeight / resolution);
-
-        let numericSeed = hashSeed(seed);
-
+        const params = new URLSearchParams(window.location.search);
+        const seed = params.get("seed") || "default-seed";
+        const numericSeed = hashSeed(seed);
         randomSeed(numericSeed);
         noiseSeed(numericSeed);
 
-        let primaryHue = numericSeed % 255;
-        colors.push(primaryHue);
-        colors.push((primaryHue + 120) % 255);
-        colors.push((primaryHue + 240) % 255);
-
-        flowField = new Array(cols * rows);
-
-        for (let i = 0; i < numParticles; i++) {
-          particles.push(new Particle(numericSeed + i));
-        }
+        const primaryHue = numericSeed % 255;
+        colors = [
+          primaryHue,
+          (primaryHue + 120) % 255,
+          (primaryHue + 240) % 255,
+        ];
 
         colorMode(HSB, 255);
         blendMode(ADD);
+
+        cols = floor(renderWidth / resolution);
+        rows = floor(renderHeight / resolution);
+        flowField = new Float32Array(cols * rows * 2);
+
+        for (let i = 0; i < numParticles; i++) {
+          particles.push(new Particle());
+        }
       }
 
       function draw() {
-        frameRate(120)
-        if (frameCount > frameLimit) {
-          noLoop();
-          return;
+        let z = frameCount * 0.01;
+        let idx = 0;
+        for (let x = 0; x < cols; x++) {
+          for (let y = 0; y < rows; y++) {
+            const angle = noise(x * 0.1, y * 0.1, z) * TWO_PI * 4;
+            flowField[idx] = cos(angle) * 0.5;
+            flowField[idx + 1] = sin(angle) * 0.5;
+            idx += 2;
+          }
         }
 
-        let scaleX = width / renderWidth;
-        let scaleY = height / renderHeight;
-        let scaleFactor = max(scaleX, scaleY);
+        background(0, 10);
 
-        let offsetX = (width - renderWidth * scaleFactor) / 2;
-        let offsetY = (height - renderHeight * scaleFactor) / 2;
+        // compute transforms
+        const scaleFactor = max(width / renderWidth, height / renderHeight);
+        const offsetX = (width - renderWidth * scaleFactor) / 2;
+        const offsetY = (height - renderHeight * scaleFactor) / 2;
+        const followMode = frameCount > 500;
+        let mxRender = 0,
+          myRender = 0;
+        if (followMode) {
+          mxRender = (mouseX - offsetX) / scaleFactor;
+          myRender = (mouseY - offsetY) / scaleFactor;
+        }
 
         push();
         translate(offsetX, offsetY);
         scale(scaleFactor);
-
-        background(0, 10);
-
-        let xOffset = 0;
-        for (let x = 0; x < cols; x++) {
-          let yOffset = 0;
-          for (let y = 0; y < rows; y++) {
-            let index = x + y * cols;
-            let angle = noise(xOffset, yOffset, zOffset) * TWO_PI * 4;
-            let v = p5.Vector.fromAngle(angle);
-            v.setMag(0.5);
-            flowField[index] = v;
-            yOffset += 0.1;
-          }
-          xOffset += 0.1;
-        }
-        zOffset += 0.01;
-
         for (let p of particles) {
-          p.follow(flowField);
+          p.follow(flowField, followMode, mxRender, myRender);
           p.update();
           p.edges();
           p.show();
         }
-
         pop();
       }
 
       class Particle {
-        constructor(seed) {
+        constructor() {
           this.pos = createVector(random(renderWidth), random(renderHeight));
-          this.vel = createVector(0, 0);
-          this.acc = createVector(0, 0);
+          this.vel = createVector();
+          this.acc = createVector();
           this.maxSpeed = 4;
-
-          this.h = colors[floor(seededRandom(seed, 0, 3))];
+          this.h = colors[floor(random(colors.length))];
         }
-
-        follow(flowField) {
-          let x = floor(this.pos.x / resolution);
-          let y = floor(this.pos.y / resolution);
-          let index = x + y * cols;
-          let force = flowField[index];
-          if (force) {
-            this.applyForce(force);
+        follow(field, followMode, mx, my) {
+          if (followMode) {
+            // vector toward mouse
+            const target = createVector(mx, my);
+            const desired = p5.Vector.sub(target, this.pos).setMag(0.5);
+            this.acc.add(desired);
+          } else {
+            // normal flowField
+            const x = floor(this.pos.x / resolution);
+            const y = floor(this.pos.y / resolution);
+            const i = 2 * (x + y * cols);
+            this.acc.x += field[i];
+            this.acc.y += field[i + 1];
           }
         }
-
-        applyForce(force) {
-          this.acc.add(force);
-        }
-
         update() {
-          this.vel.add(this.acc);
-          this.vel.limit(this.maxSpeed);
+          this.vel.add(this.acc).limit(this.maxSpeed);
           this.pos.add(this.vel);
           this.acc.mult(0);
-
-          if (this.vel.mag() < 0.1) {
-            this.reinitialize();
-          }
         }
-
         edges() {
-          if (this.pos.x > renderWidth) this.pos.x = random(-10, 10);
-          if (this.pos.x < 0) this.pos.x = renderWidth - random(-10, 10);
-          if (this.pos.y > renderHeight) this.pos.y = random(-10, 10);
-          if (this.pos.y < 0) this.pos.y = renderHeight - random(-10, 10);
+          if (this.pos.x > renderWidth) this.pos.x = 0;
+          if (this.pos.x < 0) this.pos.x = renderWidth;
+          if (this.pos.y > renderHeight) this.pos.y = 0;
+          if (this.pos.y < 0) this.pos.y = renderHeight;
         }
-
-        reinitialize() {
-          this.pos = createVector(random(renderWidth), random(renderHeight));
-          this.vel = createVector(0, 0);
-        }
-
         show() {
           noStroke();
-          fill(this.h, 255, 255, 10);
+          fill(this.h, MAX_BRIGHTNESS, MAX_BRIGHTNESS, MAX_ALPHA);
           ellipse(this.pos.x, this.pos.y, 4);
         }
       }
@@ -166,26 +135,16 @@
       function hashSeed(str) {
         let hash = 0;
         for (let i = 0; i < str.length; i++) {
-          let char = str.charCodeAt(i);
-          hash = (hash << 5) - hash + char;
+          hash = (hash << 5) - hash + str.charCodeAt(i);
           hash = hash & hash;
         }
         return abs(hash);
       }
 
-      function seededRandom(seed, min = 0, max = 1) {
-        let x = Math.sin(seed) * 10000;
-        let randomVal = x - Math.floor(x);
-        return min + randomVal * (max - min);
-      }
-
       function windowResized() {
-        frameCount = 0;
         resizeCanvas(windowWidth, windowHeight);
       }
     </script>
   </head>
-  <body>
-    <div id="sketch-container" style="background-color: black"></div>
-  </body>
+  <body></body>
 </html>
